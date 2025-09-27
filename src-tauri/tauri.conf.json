@@ -15,7 +15,7 @@
         "label": "main",
         "title": "Main Window",
         "width": 500,
-        "height": 500,
+        "height": 1000,
         "decorations": false,
         "skipTaskbar": true,
         "alwaysOnTop": true,

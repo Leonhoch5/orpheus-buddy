@@ -2,33 +2,30 @@ import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir, join } from "@tauri-apps/api/path";
-import { readTextFile } from "@tauri-apps/plugin-fs";
-import ini from "ini";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 
 import "./App.css";
 
-async function loadWakatimeConfig() {
+async function loadSlackAuth() {
   try {
     const home = await homeDir();
-    const cfgPath = await join(home, ".wakatime.cfg");
-    console.log("Resolved wakatime.cfg path:", cfgPath);
-    const text = await readTextFile(cfgPath);
-    console.log("Read wakatime.cfg contents:", text);
-    const config = ini.parse(text);
-    const apiKey =
-      config.wakatime?.apikey ??
-      config.default?.apikey ??
-      config.settings?.api_key ??
-      null;
-    const apiUrl =
-      config.wakatime?.base_url ??
-      config.default?.base_url ??
-      config.settings?.api_url ??
-      null;
-    return { apiKey, apiUrl };
+    const authPath = await join(home, ".orpheus-slack-auth.json");
+    const text = await readTextFile(authPath);
+    return JSON.parse(text);
   } catch (err) {
-    console.error("Error loading wakatime config:", err);
-    return { apiKey: null, apiUrl: null };
+    console.log("No existing Slack auth found");
+    return null;
+  }
+}
+
+async function saveSlackAuth(authData: any) {
+  try {
+    const home = await homeDir();
+    const authPath = await join(home, ".orpheus-slack-auth.json");
+    await writeTextFile(authPath, JSON.stringify(authData, null, 2));
+    console.log("Slack auth saved");
+  } catch (err) {
+    console.error("Failed to save Slack auth:", err);
   }
 }
 
@@ -37,8 +34,13 @@ export default function App() {
   const [dinoList, setDinoList] = useState<string[]>([]);
   const [dino, setDino] = useState<string | null>(null);
   const [isTyping, setIsTyping] = useState(false);
-  const [wakatime, setWakatime] = useState<{ apiKey: string | null; apiUrl: string | null }>({ apiKey: null, apiUrl: null });
+  const [isPartyTime, setIsPartyTime] = useState(false);
+  const [lastCodingMinutes, setLastCodingMinutes] = useState(0);
+  const [slackAuth, setSlackAuth] = useState<any>(null);
+  const [isSlackAuthenticated, setIsSlackAuthenticated] = useState(false);
+  const [showSlackLogin, setShowSlackLogin] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const partyCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const handleUpdateDinosaurs = async () => {
     setStatus("Updating dinosaurs...");
@@ -61,6 +63,101 @@ export default function App() {
       setDino(files[Math.floor(Math.random() * files.length)]);
     } else {
       setDino(null);
+    }
+  };
+
+  const handleGetWakatimeToday = async () => {
+    setStatus("Getting today's WakaTime stats...");
+    try {
+      const data = await invoke<string>("get_wakatime_today");
+      setStatus(`Today's coding time: ${data}`);
+    } catch (err) {
+      console.error("WakaTime CLI error:", err);
+      setStatus("Failed to get WakaTime stats. Make sure WakaTime CLI is installed.");
+    }
+  };
+
+  const handleGetWakatimeDetailedStats = async () => {
+    setStatus("Getting detailed WakaTime stats...");
+    try {
+      const data = await invoke<string>("get_wakatime_today_detailed");
+      setStatus("Detailed stats retrieved - check console for details");
+      console.log("Detailed WakaTime data:", data);
+    } catch (err) {
+      console.error("WakaTime detailed stats error:", err);
+      setStatus("Failed to get detailed WakaTime stats.");
+    }
+  };
+
+  const checkPartyTime = async () => {
+    try {
+      const data = await invoke<string>("get_wakatime_today");
+      const jsonData = JSON.parse(data);
+      
+      let totalMinutes = 0;
+      if (jsonData.text) {
+        const timeText = jsonData.text;
+        const hourMatch = timeText.match(/(\d+)h/);
+        const minuteMatch = timeText.match(/(\d+)m/);
+        
+        if (hourMatch) totalMinutes += parseInt(hourMatch[1]) * 60;
+        if (minuteMatch) totalMinutes += parseInt(minuteMatch[1]);
+      }
+      
+      console.log(`Current coding time: ${totalMinutes} minutes, Last: ${lastCodingMinutes} minutes`);
+      
+      const currentMilestone = Math.floor(totalMinutes / 10);
+      const lastMilestone = Math.floor(lastCodingMinutes / 10);
+      
+      if (currentMilestone > lastMilestone && totalMinutes > 0) {
+        console.log(`🎉 PARTY TIME! Hit ${currentMilestone * 10} minutes of coding!`);
+        triggerPartyMode();
+      }
+      
+      setLastCodingMinutes(totalMinutes);
+    } catch (err) {
+      console.log("Party check failed:", err);
+    }
+  };
+
+  const triggerPartyMode = () => {
+    setIsPartyTime(true);
+    setDino("pre/party/party1.gif");
+    setStatus(`🎉 PARTY TIME! You hit a 10-minute coding milestone! 🎉`);
+    
+    setTimeout(() => {
+      setIsPartyTime(false);
+      if (dinoList.length > 0) {
+        setDino(dinoList[Math.floor(Math.random() * dinoList.length)]);
+      }
+      setStatus("");
+    }, 5000);
+  };
+
+  const handleSlackAuth = async () => {
+    try {
+      setStatus("Starting Slack authentication...");
+      const authUrl = await invoke<string>("start_slack_oauth");
+      await invoke("open_url", { url: authUrl });
+      setShowSlackLogin(true);
+    } catch (err) {
+      setStatus("Slack auth failed to start");
+      console.error(err);
+    }
+  };
+
+  const checkSlackAuthCallback = async () => {
+    try {
+      const authData = await invoke<any>("get_slack_auth_result");
+      if (authData) {
+        await saveSlackAuth(authData);
+        setSlackAuth(authData);
+        setIsSlackAuthenticated(true);
+        setShowSlackLogin(false);
+        setStatus("Slack authentication successful!");
+      }
+    } catch (err) {
+      console.log("Auth not ready yet");
     }
   };
 
@@ -97,51 +194,74 @@ export default function App() {
     return () => { unlisten.then(f => f()); };
   }, []);
 
-  // useEffect(() => {
-  //   loadWakatimeConfig().then(setWakatime);
-  // }, []);
+  useEffect(() => {
+    const initialTimeout = setTimeout(checkPartyTime, 10000);
+    
+    partyCheckRef.current = setInterval(checkPartyTime, 120000);
+    
+    return () => {
+      clearTimeout(initialTimeout);
+      if (partyCheckRef.current) {
+        clearInterval(partyCheckRef.current);
+      }
+    };
+  }, [lastCodingMinutes]);
 
-  const handleSearchWakatime = async () => {
-    const result = await loadWakatimeConfig();
-    setWakatime(result);
+  useEffect(() => {
+    loadSlackAuth().then((auth) => {
+      if (auth && auth.access_token) {
+        setSlackAuth(auth);
+        setIsSlackAuthenticated(true);
+        setStatus("Logged in to Slack");
+      } else {
+        setShowSlackLogin(true);
+      }
+    });
+  }, []);
+
+    useEffect(() => {
+    if (showSlackLogin) {
+      const interval = setInterval(checkSlackAuthCallback, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [showSlackLogin]);
+
+  const handleSkipSlackAuth = () => {
+    setShowSlackLogin(false);
+    setStatus("Slack authentication skipped - some features may be limited");
   };
 
-  const handleFetchWakatimeData = async () => {
-  if (!wakatime.apiKey || !wakatime.apiUrl) {
-    setStatus("API key or URL not found.");
-    return;
+  if (showSlackLogin && !isSlackAuthenticated) {
+    return (
+      <div className="app">
+        <div style={{ textAlign: 'center', padding: '50px' }}>
+          <h2>Slack Authentication</h2>
+          <p>Authenticate with Slack to enable full features, or skip to continue with limited functionality</p>
+          <button onClick={handleSlackAuth} style={{ marginRight: '10px' }}>Login with Slack</button>
+          <button onClick={handleSkipSlackAuth} style={{ backgroundColor: '#666', color: 'white' }}>Skip Slack Auth</button>
+          <div>{status}</div>
+        </div>
+      </div>
+    );
   }
-  
-  const statsUrl = wakatime.apiUrl.replace(/\/$/, "") + "/stats";
-  console.log("[FRONTEND] Sending:", {
-    api_url: statsUrl,
-    api_key: wakatime.apiKey
-  });
-
-  setStatus("Fetching Hackatime data...");
-  try {
-    const data = await invoke<string>("fetch_hackatime_stats", {
-      api_url: statsUrl,
-      api_key: wakatime.apiKey,
-    });
-    setStatus(`Fetched: ${data}`);
-  } catch (err) {
-    console.error("Fetch error:", err);
-    setStatus("Fetch failed.");
-  }
-};
 
   return (
     <div className="app">
-      {isTyping ? (
+      {isPartyTime ? (
         <img
-          src={`../src-tauri/dinosaurs/pre/typing/typing1.gif`}
+          src={`/dinosaurs/pre/party/party1.gif`}
+          alt="Party Dinosaur"
+          style={{ width: 256, height: 256, borderRadius: 16 }}
+        />
+      ) : isTyping ? (
+        <img
+          src={`/dinosaurs/pre/typing/typing1.gif`}
           alt="Typing Dinosaur"
           style={{ width: 256, height: 256, borderRadius: 16 }}
         />
       ) : dino ? (
         <img
-          src={`../src-tauri/dinosaurs/pre/idle/idle1.png`}
+          src={`/dinosaurs/pre/idle/idle1.png`}
           alt="Dinosaur"
           style={{ width: 256, height: 256, borderRadius: 16 }}
         />
@@ -149,17 +269,15 @@ export default function App() {
         <div>No dinosaurs found.</div>
       )}
       <div>
-        <button onClick={handleSearchWakatime}>Search WakaTime API Key & URL</button>
-        <button onClick={handleFetchWakatimeData}>Fetch WakaTime Data</button>
+        <button onClick={handleGetWakatimeToday}>Get Today's WakaTime Stats</button>
+        <button onClick={handleGetWakatimeDetailedStats}>Get Detailed WakaTime Stats</button>
+        <button onClick={checkPartyTime} style={{ backgroundColor: '#ff6b6b', color: 'white' }}>🎉 Test Party Mode</button>
         <br />
-        <strong>WakaTime API Key:</strong> {wakatime.apiKey ?? "Not found"}
-        <br />
-        <strong>WakaTime API URL:</strong> {wakatime.apiUrl ?? "Not found"}
+        <strong>Slack Status:</strong> {isSlackAuthenticated ? "✅ Connected" : "❌ Not connected"}
         <br />
         <div>{status}</div>
       </div>
-      {/* <button onClick={handleUpdateDinosaurs}>Update Dinosaurs</button>
-      <div>{status}</div> */}
     </div>
   );
 }
+
