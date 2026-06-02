@@ -46,11 +46,19 @@ fn callback_server_script_path() -> PathBuf {
 }
 
 fn callback_auth_code_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("src-tauri must have a parent directory")
-        .join("callback")
-        .join("hackclub_auth_code.txt")
+    if let Some(mut dir) = dirs::data_dir() {
+        dir.push("orpheus-buddy");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.push("hackclub_auth_code.txt");
+        dir
+    } else {
+        // fallback to repo callback folder
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must have a parent directory")
+            .join("callback")
+            .join("hackclub_auth_code.txt")
+    }
 }
 
 fn start_callback_server() {
@@ -404,6 +412,7 @@ async fn get_wakatime_stats() -> Result<String, String> {
 async fn start_hackclub_oauth(prompt_login: Option<bool>, max_age: Option<u32>) -> Result<String, String> {
     let client_id = env::var("HACKCLUB_CLIENT_ID")
         .map_err(|_| "Missing HACKCLUB_CLIENT_ID env var".to_string())?;
+    println!("DEBUG: start_hackclub_oauth called. HACKCLUB_CLIENT_ID present");
     let redirect_uri = "http://localhost:3001/callback";
     let scope = "openid profile email name slack_id verification_status";
 
@@ -425,7 +434,9 @@ async fn start_hackclub_oauth(prompt_login: Option<bool>, max_age: Option<u32>) 
         }
     }
 
-    Ok(auth_url.to_string())
+    let url_str = auth_url.to_string();
+    println!("DEBUG: auth_url = {}", url_str);
+    Ok(url_str)
 }
 
 #[tauri::command]
@@ -440,7 +451,22 @@ async fn get_hackclub_auth_result() -> Result<Value, String> {
     }
 
     let auth_code_path = callback_auth_code_path();
+    let mut used_path: Option<std::path::PathBuf> = None;
+
     if auth_code_path.exists() {
+        used_path = Some(auth_code_path.clone());
+    } else {
+        let fallback = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must have a parent directory")
+            .join("callback")
+            .join("hackclub_auth_code.txt");
+        if fallback.exists() {
+            used_path = Some(fallback);
+        }
+    }
+
+    if let Some(auth_code_path) = used_path {
         let code = fs::read_to_string(&auth_code_path)
             .map_err(|e| format!("Failed to read auth code: {}", e))?
             .trim()
@@ -482,8 +508,9 @@ async fn exchange_hackclub_oauth_code(code: String) -> Result<Value, String> {
         .await
         .map_err(|e| format!("Failed to exchange code: {}", e))?;
     
-    let json = response.json::<Value>().await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
+    let text = response.text().await.map_err(|e| format!("Failed to read response text: {}", e))?;
+    println!("DEBUG: token exchange response: {}", text);
+    let json = serde_json::from_str::<Value>(&text).map_err(|e| format!("Failed to parse response: {}", e))?;
     
     {
         let mut state = HACKCLUB_STATE.lock().unwrap();

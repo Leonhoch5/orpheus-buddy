@@ -2,9 +2,30 @@ import http.server
 import socketserver
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
+import os
+import sys
 
 SCRIPT_DIR = Path(__file__).parent.absolute()
-AUTH_CODE_FILE = SCRIPT_DIR / "hackclub_auth_code.txt"
+
+def app_data_dir():
+    system = os.name
+    # Windows: %APPDATA%
+    if os.name == 'nt':
+        base = os.environ.get('APPDATA')
+        if base:
+            return Path(base) / 'orpheus-buddy'
+    # macOS
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support' / 'orpheus-buddy'
+    # Linux / other: XDG_DATA_HOME or ~/.local/share
+    xdg = os.environ.get('XDG_DATA_HOME')
+    if xdg:
+        return Path(xdg) / 'orpheus-buddy'
+    return Path.home() / '.local' / 'share' / 'orpheus-buddy'
+
+AUTH_DIR = app_data_dir()
+AUTH_DIR.mkdir(parents=True, exist_ok=True)
+AUTH_CODE_FILE = AUTH_DIR / 'hackclub_auth_code.txt'
 
 class CallbackHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):

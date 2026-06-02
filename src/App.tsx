@@ -1,15 +1,15 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { homeDir, join } from "@tauri-apps/api/path";
+import { appDataDir, join } from "@tauri-apps/api/path";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 
 import "./App.css";
 
 async function loadHackClubAuth() {
   try {
-    const home = await homeDir();
-    const authPath = await join(home, ".orpheus-hackclub-auth.json");
+    const appdata = await appDataDir();
+    const authPath = await join(appdata, "orpheus-hackclub-auth.json");
     const text = await readTextFile(authPath);
     return JSON.parse(text);
   } catch (err) {
@@ -19,8 +19,8 @@ async function loadHackClubAuth() {
 
 async function saveHackClubAuth(authData: any) {
   try {
-    const home = await homeDir();
-    const authPath = await join(home, ".orpheus-hackclub-auth.json");
+    const appdata = await appDataDir();
+    const authPath = await join(appdata, "orpheus-hackclub-auth.json");
     await writeTextFile(authPath, JSON.stringify(authData, null, 2));
   } catch (err) {
   }
@@ -149,15 +149,30 @@ export default function App() {
 
   const checkHackClubAuthCallback = async () => {
     try {
+      console.log("DEBUG: polling for hackclub auth result");
       const authData = await invoke<any>("get_hackclub_auth_result");
-      if (authData) {
+      console.log("DEBUG: got authData:", authData);
+
+      if (authData && authData.access_token) {
         await saveHackClubAuth(authData);
         setHackClubAuth(authData);
         setIsHackClubAuthenticated(true);
         setShowHackClubLogin(false);
         setStatus("Authentication successful");
+        return;
+      }
+
+      // If authData exists but no token, surface any error info
+      if (authData && (authData.error || authData.error_description)) {
+        const msg = authData.error_description || authData.error || "Authentication failed";
+        console.error("Auth error from backend:", authData);
+        setStatus(`Authentication error: ${msg}`);
+        setShowHackClubLogin(false);
       }
     } catch (err) {
+      console.error("Error polling auth result:", err);
+      // keep showHackClubLogin true so polling continues, but surface status
+      setStatus("Waiting for authentication... (polling)");
     }
   };
 
