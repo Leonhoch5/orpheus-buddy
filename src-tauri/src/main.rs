@@ -1,6 +1,5 @@
-use std::{fs, path::Path};
+use std::{env, fs, path::{Path, PathBuf}, process::{Command, Stdio}};
 use git2::Repository;
-use std::process::Command;
 
 use rdev::{listen, Event, EventType};
 use tauri::Emitter;
@@ -10,12 +9,12 @@ use serde_json::Value;
 use open;
 
 #[derive(Clone)]
-struct SlackOAuthState {
+struct HackClubOAuthState {
     auth_result: Option<Value>,
 }
 
 lazy_static::lazy_static! {
-    static ref SLACK_STATE: Arc<Mutex<SlackOAuthState>> = Arc::new(Mutex::new(SlackOAuthState {
+    static ref HACKCLUB_STATE: Arc<Mutex<HackClubOAuthState>> = Arc::new(Mutex::new(HackClubOAuthState {
         auth_result: None,
     }));
 }
@@ -37,6 +36,48 @@ const REPO_URL: &str = "https://github.com/hackclub/dinosaurs.git";
 const LOCAL_REPO_DIR: &str = "../public/dinosaurs";
 const RESIZED_DIR: &str = "../public/dinosaurs/resized";
 const TARGET_SIZE: u32 = 256;
+
+fn callback_server_script_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri must have a parent directory")
+        .join("callback")
+        .join("https_server.py")
+}
+
+fn callback_auth_code_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri must have a parent directory")
+        .join("callback")
+        .join("hackclub_auth_code.txt")
+}
+
+fn start_callback_server() {
+    let script_path = callback_server_script_path();
+
+    if !script_path.exists() {
+        eprintln!("Callback server script not found at {:?}", script_path);
+        return;
+    }
+
+    for python_command in ["python", "py", "python3"] {
+        match Command::new(python_command)
+            .arg(&script_path)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+        {
+            Ok(_) => {
+                println!("Callback server started at http://localhost:3001/callback");
+                return;
+            }
+            Err(_) => continue,
+        }
+    }
+
+    eprintln!("Failed to start callback server with python, py, or python3");
+}
 
 #[tauri::command]
 fn update_dinosaurs() -> Result<String, String> {
@@ -360,45 +401,82 @@ async fn get_wakatime_stats() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn start_slack_oauth() -> Result<String, String> {
-    let client_id = "2210535565.9333084041156";
-    let redirect_uri = "https://127.0.0.1:8080/callback";
-    let scope = "chat:write,channels:read,users:read";
-    
-    let auth_url = format!(
-        "https://slack.com/oauth/v2/authorize?client_id={}&scope={}&redirect_uri={}",
-        client_id, scope, redirect_uri
-    );
-    
-    Ok(auth_url)
+async fn start_hackclub_oauth(prompt_login: Option<bool>, max_age: Option<u32>) -> Result<String, String> {
+    let client_id = env::var("HACKCLUB_CLIENT_ID")
+        .map_err(|_| "Missing HACKCLUB_CLIENT_ID env var".to_string())?;
+    let redirect_uri = "http://localhost:3001/callback";
+    let scope = "openid profile email name slack_id verification_status";
+
+    let mut auth_url = url::Url::parse("https://auth.hackclub.com/oauth/authorize")
+        .map_err(|e| format!("Failed to build auth URL: {}", e))?;
+    {
+        let mut qp = auth_url.query_pairs_mut();
+        qp.append_pair("client_id", &client_id)
+            .append_pair("scope", scope)
+            .append_pair("response_type", "code")
+            .append_pair("redirect_uri", redirect_uri);
+
+        if let Some(true) = prompt_login {
+            qp.append_pair("prompt", "login");
+        }
+
+        if let Some(age) = max_age {
+            qp.append_pair("max_age", &age.to_string());
+        }
+    }
+
+    Ok(auth_url.to_string())
 }
 
 #[tauri::command]
-async fn get_slack_auth_result() -> Result<Value, String> {
-    let state = SLACK_STATE.lock().unwrap();
-    if let Some(ref result) = state.auth_result {
-        Ok(result.clone())
+async fn get_hackclub_auth_result() -> Result<Value, String> {
+    let cached_result = {
+        let state = HACKCLUB_STATE.lock().unwrap();
+        state.auth_result.clone()
+    };
+
+    if let Some(result) = cached_result {
+        return Ok(result);
+    }
+
+    let auth_code_path = callback_auth_code_path();
+    if auth_code_path.exists() {
+        let code = fs::read_to_string(&auth_code_path)
+            .map_err(|e| format!("Failed to read auth code: {}", e))?
+            .trim()
+            .to_string();
+
+        if code.is_empty() {
+            return Err("No auth result yet".to_string());
+        }
+
+        let result = exchange_hackclub_oauth_code(code).await?;
+        let _ = fs::remove_file(&auth_code_path);
+        Ok(result)
     } else {
         Err("No auth result yet".to_string())
     }
 }
 
 #[tauri::command]
-async fn exchange_slack_oauth_code(code: String) -> Result<Value, String> {
-    let client_id = "2210535565.9333084041156";
-    let client_secret = "a99334e63ae05a24fba0127b4a0db577";
-    let redirect_uri = "https://127.0.0.1:8080/callback";
-    
+async fn exchange_hackclub_oauth_code(code: String) -> Result<Value, String> {
+    let client_id = env::var("HACKCLUB_CLIENT_ID")
+        .map_err(|_| "Missing HACKCLUB_CLIENT_ID env var".to_string())?;
+    let client_secret = env::var("HACKCLUB_CLIENT_SECRET")
+        .map_err(|_| "Missing HACKCLUB_CLIENT_SECRET env var".to_string())?;
+    let redirect_uri = "http://localhost:3001/callback";
+
     let params = [
-        ("client_id", client_id),
-        ("client_secret", client_secret),
-        ("code", &code),
-        ("redirect_uri", redirect_uri),
+        ("client_id".to_string(), client_id),
+        ("client_secret".to_string(), client_secret),
+        ("code".to_string(), code),
+        ("redirect_uri".to_string(), redirect_uri.to_string()),
+        ("grant_type".to_string(), "authorization_code".to_string()),
     ];
-    
+
     let client = reqwest::Client::new();
     let response = client
-        .post("https://slack.com/api/oauth.v2.access")
+        .post("https://auth.hackclub.com/oauth/token")
         .form(&params)
         .send()
         .await
@@ -408,43 +486,13 @@ async fn exchange_slack_oauth_code(code: String) -> Result<Value, String> {
         .map_err(|e| format!("Failed to parse response: {}", e))?;
     
     {
-        let mut state = SLACK_STATE.lock().unwrap();
+        let mut state = HACKCLUB_STATE.lock().unwrap();
         state.auth_result = Some(json.clone());
     }
     
     Ok(json)
 }
 
-async fn exchange_slack_code(code: String) {
-    let client_id = "2210535565.9333084041156";
-    let client_secret = "a99334e63ae05a24fba0127b4a0db577";
-    let redirect_uri = "https://tauri.localhost/slack/callback";
-    
-    let params = [
-        ("client_id", client_id),
-        ("client_secret", client_secret),
-        ("code", &code),
-        ("redirect_uri", redirect_uri),
-    ];
-    
-    let client = reqwest::Client::new();
-    match client
-        .post("https://slack.com/api/oauth.v2.access")
-        .form(&params)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            if let Ok(json) = response.json::<Value>().await {
-                let mut state = SLACK_STATE.lock().unwrap();
-                state.auth_result = Some(json);
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to exchange code: {}", e);
-        }
-    }
-}
 #[tauri::command]
 async fn open_url(url: String) -> Result<(), String> {
     open::that(url).map_err(|e| format!("Failed to open URL: {}", e))
@@ -494,7 +542,7 @@ async fn check_party_time(app_handle: tauri::AppHandle) -> Result<bool, String> 
     println!("Current 10-min intervals: {}, Last intervals: {}", current_ten_min_intervals, last_ten_min_intervals);
     
     if current_ten_min_intervals > last_ten_min_intervals && current_seconds > party_state.last_known_seconds {
-        println!("🎉 PARTY TIME! Crossed {} ten-minute intervals!", current_ten_min_intervals);
+        println!(" PARTY TIME! Crossed {} ten-minute intervals!", current_ten_min_intervals);
         
         party_state.last_known_seconds = current_seconds;
         party_state.last_party_threshold = current_ten_min_intervals * 600;
@@ -554,10 +602,14 @@ fn parse_time_text_to_seconds(text: &str) -> u32 {
 }
 
 fn main() {
+    // Load environment variables from src-tauri/.env during development
+    // dotenvy will silently ignore if the file is not present.
+    dotenvy::dotenv().ok();
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
+            start_callback_server();
             start_keyboard_listener(app_handle);
             Ok(())
         })
@@ -568,9 +620,9 @@ fn main() {
             get_wakatime_today,
             get_wakatime_today_detailed,
             get_wakatime_stats,
-            start_slack_oauth,
-            get_slack_auth_result,
-            exchange_slack_oauth_code,
+            start_hackclub_oauth,
+            get_hackclub_auth_result,
+            exchange_hackclub_oauth_code,
             open_url,
             check_party_time
         ])

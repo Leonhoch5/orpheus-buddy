@@ -6,26 +6,23 @@ import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 
 import "./App.css";
 
-async function loadSlackAuth() {
+async function loadHackClubAuth() {
   try {
     const home = await homeDir();
-    const authPath = await join(home, ".orpheus-slack-auth.json");
+    const authPath = await join(home, ".orpheus-hackclub-auth.json");
     const text = await readTextFile(authPath);
     return JSON.parse(text);
   } catch (err) {
-    console.log("No existing Slack auth found");
     return null;
   }
 }
 
-async function saveSlackAuth(authData: any) {
+async function saveHackClubAuth(authData: any) {
   try {
     const home = await homeDir();
-    const authPath = await join(home, ".orpheus-slack-auth.json");
+    const authPath = await join(home, ".orpheus-hackclub-auth.json");
     await writeTextFile(authPath, JSON.stringify(authData, null, 2));
-    console.log("Slack auth saved");
   } catch (err) {
-    console.error("Failed to save Slack auth:", err);
   }
 }
 
@@ -36,9 +33,9 @@ export default function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [isPartyTime, setIsPartyTime] = useState(false);
   const [lastCodingMinutes, setLastCodingMinutes] = useState(0);
-  const [slackAuth, setSlackAuth] = useState<any>(null);
-  const [isSlackAuthenticated, setIsSlackAuthenticated] = useState(false);
-  const [showSlackLogin, setShowSlackLogin] = useState(false);
+  const [hackClubAuth, setHackClubAuth] = useState<any>(null);
+  const [isHackClubAuthenticated, setIsHackClubAuthenticated] = useState(false);
+  const [showHackClubLogin, setShowHackClubLogin] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const partyCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -134,30 +131,33 @@ export default function App() {
     }, 5000);
   };
 
-  const handleSlackAuth = async () => {
+  const handleHackClubAuth = async (reauth = false, maxAge?: number) => {
     try {
-      setStatus("Starting Slack authentication...");
-      const authUrl = await invoke<string>("start_slack_oauth");
+      setStatus("Starting authentication...");
+      const args: any = {};
+      if (reauth) args.prompt_login = true;
+      if (maxAge) args.max_age = maxAge;
+
+      const authUrl = await invoke<string>("start_hackclub_oauth", args);
       await invoke("open_url", { url: authUrl });
-      setShowSlackLogin(true);
+      setShowHackClubLogin(true);
     } catch (err) {
-      setStatus("Slack auth failed to start");
+      setStatus("Authentication failed to start");
       console.error(err);
     }
   };
 
-  const checkSlackAuthCallback = async () => {
+  const checkHackClubAuthCallback = async () => {
     try {
-      const authData = await invoke<any>("get_slack_auth_result");
+      const authData = await invoke<any>("get_hackclub_auth_result");
       if (authData) {
-        await saveSlackAuth(authData);
-        setSlackAuth(authData);
-        setIsSlackAuthenticated(true);
-        setShowSlackLogin(false);
-        setStatus("Slack authentication successful!");
+        await saveHackClubAuth(authData);
+        setHackClubAuth(authData);
+        setIsHackClubAuthenticated(true);
+        setShowHackClubLogin(false);
+        setStatus("Authentication successful");
       }
     } catch (err) {
-      console.log("Auth not ready yet");
     }
   };
 
@@ -208,37 +208,37 @@ export default function App() {
   }, [lastCodingMinutes]);
 
   useEffect(() => {
-    loadSlackAuth().then((auth) => {
+    loadHackClubAuth().then((auth) => {
       if (auth && auth.access_token) {
-        setSlackAuth(auth);
-        setIsSlackAuthenticated(true);
-        setStatus("Logged in to Slack");
+        setHackClubAuth(auth);
+        // Automatically reauthenticate when an existing auth is present
+        handleHackClubAuth(true);
       } else {
-        setShowSlackLogin(true);
+        setShowHackClubLogin(true);
       }
     });
   }, []);
 
     useEffect(() => {
-    if (showSlackLogin) {
-      const interval = setInterval(checkSlackAuthCallback, 1000);
+    if (showHackClubLogin) {
+      const interval = setInterval(checkHackClubAuthCallback, 1000);
       return () => clearInterval(interval);
     }
-  }, [showSlackLogin]);
+  }, [showHackClubLogin]);
 
-  const handleSkipSlackAuth = () => {
-    setShowSlackLogin(false);
-    setStatus("Slack authentication skipped - some features may be limited");
+  const handleSkipHackClubAuth = () => {
+    setShowHackClubLogin(false);
+    setStatus("Authentication skipped");
   };
 
-  if (showSlackLogin && !isSlackAuthenticated) {
+  if (showHackClubLogin && !isHackClubAuthenticated) {
     return (
       <div className="app">
         <div style={{ textAlign: 'center', padding: '50px' }}>
-          <h2>Slack Authentication</h2>
-          <p>Authenticate with Slack to enable full features, or skip to continue with limited functionality</p>
-          <button onClick={handleSlackAuth} style={{ marginRight: '10px' }}>Login with Slack</button>
-          <button onClick={handleSkipSlackAuth} style={{ backgroundColor: '#666', color: 'white' }}>Skip Slack Auth</button>
+          <h2>Authentication</h2>
+          <p>Authenticate to enable full features, or skip to continue with limited functionality</p>
+          <button onClick={() => handleHackClubAuth(false)} style={{ marginRight: '10px' }}>Login</button>
+          <button onClick={handleSkipHackClubAuth} style={{ backgroundColor: '#666', color: 'white' }}>Skip</button>
           <div>{status}</div>
         </div>
       </div>
@@ -273,7 +273,7 @@ export default function App() {
         <button onClick={handleGetWakatimeDetailedStats}>Get Detailed WakaTime Stats</button>
         <button onClick={checkPartyTime} style={{ backgroundColor: '#ff6b6b', color: 'white' }}>🎉 Test Party Mode</button>
         <br />
-        <strong>Slack Status:</strong> {isSlackAuthenticated ? "✅ Connected" : "❌ Not connected"}
+        <strong>Status:</strong> {isHackClubAuthenticated ? "Connected" : "Not connected"}
         <br />
         <div>{status}</div>
       </div>
