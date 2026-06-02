@@ -36,6 +36,9 @@ export default function App() {
   const [hackClubAuth, setHackClubAuth] = useState<any>(null);
   const [isHackClubAuthenticated, setIsHackClubAuthenticated] = useState(false);
   const [showHackClubLogin, setShowHackClubLogin] = useState(false);
+  const [slackAuth, setSlackAuth] = useState<any>(null);
+  const [isSlackAuthenticated, setIsSlackAuthenticated] = useState(false);
+  const [showSlackLogin, setShowSlackLogin] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const partyCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -176,6 +179,45 @@ export default function App() {
     }
   };
 
+  const handleSlackAuth = async (reauth = false) => {
+    try {
+      setStatus("Starting Slack authentication...");
+      const args: any = {};
+      if (reauth) args.reauth = true;
+      const authUrl = await invoke<string>("start_slack_oauth", args);
+      await invoke("open_url", { url: authUrl });
+      setShowSlackLogin(true);
+    } catch (err) {
+      setStatus("Slack authentication failed to start");
+      console.error(err);
+    }
+  };
+
+  const checkSlackAuthCallback = async () => {
+    try {
+      console.log("DEBUG: polling for slack auth result");
+      const authData = await invoke<any>("get_slack_auth_result");
+      console.log("DEBUG: got slack authData:", authData);
+
+      if (authData && authData.access_token) {
+        setSlackAuth(authData);
+        setIsSlackAuthenticated(true);
+        setShowSlackLogin(false);
+        setStatus("Slack authentication successful");
+        return;
+      }
+
+      if (authData && authData.error) {
+        console.error("Slack auth error:", authData);
+        setStatus(`Slack auth error: ${authData.error}`);
+        setShowSlackLogin(false);
+      }
+    } catch (err) {
+      console.error("Error polling slack auth result:", err);
+      setStatus("Waiting for Slack authentication... (polling)");
+    }
+  };
+
   useEffect(() => {
     if (isTyping) {
       const timeout = setTimeout(() => setIsTyping(false), 1500);
@@ -241,6 +283,13 @@ export default function App() {
     }
   }, [showHackClubLogin]);
 
+    useEffect(() => {
+      if (showSlackLogin) {
+        const interval = setInterval(checkSlackAuthCallback, 1000);
+        return () => clearInterval(interval);
+      }
+    }, [showSlackLogin]);
+
   const handleSkipHackClubAuth = () => {
     setShowHackClubLogin(false);
     setStatus("Authentication skipped");
@@ -284,6 +333,14 @@ export default function App() {
         <div>No dinosaurs found.</div>
       )}
       <div>
+        {isHackClubAuthenticated && (
+          <div style={{ marginBottom: 10 }}>
+            <button onClick={() => handleSlackAuth(false)} style={{ marginRight: '10px' }}>
+              {isSlackAuthenticated ? 'Slack Connected' : 'Connect Slack'}
+            </button>
+            <span>{isSlackAuthenticated ? 'Slack: Connected' : 'Slack: Not connected'}</span>
+          </div>
+        )}
         <button onClick={handleGetWakatimeToday}>Get Today's WakaTime Stats</button>
         <button onClick={handleGetWakatimeDetailedStats}>Get Detailed WakaTime Stats</button>
         <button onClick={checkPartyTime} style={{ backgroundColor: '#ff6b6b', color: 'white' }}>🎉 Test Party Mode</button>

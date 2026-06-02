@@ -19,6 +19,17 @@ lazy_static::lazy_static! {
     }));
 }
 
+#[derive(Clone)]
+struct SlackOAuthState {
+    auth_result: Option<Value>,
+}
+
+lazy_static::lazy_static! {
+    static ref SLACK_STATE: Arc<Mutex<SlackOAuthState>> = Arc::new(Mutex::new(SlackOAuthState {
+        auth_result: None,
+    }));
+}
+
 #[derive(Clone, Debug)]
 struct PartyState {
     last_known_seconds: u32,
@@ -58,6 +69,22 @@ fn callback_auth_code_path() -> PathBuf {
             .expect("src-tauri must have a parent directory")
             .join("callback")
             .join("hackclub_auth_code.txt")
+    }
+}
+
+fn slack_auth_code_path() -> PathBuf {
+    if let Some(mut dir) = dirs::data_dir() {
+        dir.push("orpheus-buddy");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.push("slack_auth_code.txt");
+        dir
+    } else {
+        // fallback to repo callback folder
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must have a parent directory")
+            .join("callback")
+            .join("slack_auth_code.txt")
     }
 }
 
@@ -425,6 +452,9 @@ async fn start_hackclub_oauth(prompt_login: Option<bool>, max_age: Option<u32>) 
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", redirect_uri);
 
+        // tag this request so callback server knows which provider to write
+        qp.append_pair("state", "hackclub");
+
         if let Some(true) = prompt_login {
             qp.append_pair("prompt", "login");
         }
@@ -539,6 +569,110 @@ async fn exchange_hackclub_oauth_code(code: String) -> Result<Value, String> {
         state.auth_result = Some(json.clone());
     }
     
+    Ok(json)
+}
+
+#[tauri::command]
+async fn start_slack_oauth(_reauth: Option<bool>) -> Result<String, String> {
+    let client_id = env::var("SLACK_CLIENT_ID")
+        .map_err(|_| "Missing SLACK_CLIENT_ID env var".to_string())?;
+    let redirect_uri = "http://localhost:3001/callback";
+    // request common scopes; adjust as needed for your app
+    // Slack expects space-separated scopes
+    let scope = "channels:read chat:write users:read";
+
+    let mut auth_url = url::Url::parse("https://slack.com/oauth/v2/authorize")
+        .map_err(|e| format!("Failed to build Slack auth URL: {}", e))?;
+    {
+        let mut qp = auth_url.query_pairs_mut();
+        qp.append_pair("client_id", &client_id)
+            .append_pair("scope", scope)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("state", "slack");
+    }
+
+    Ok(auth_url.to_string())
+}
+
+#[tauri::command]
+async fn get_slack_auth_result() -> Result<Value, String> {
+    let cached_result = {
+        let state = SLACK_STATE.lock().unwrap();
+        state.auth_result.clone()
+    };
+
+    if let Some(result) = cached_result {
+        println!("DEBUG: returning cached slack auth result");
+        return Ok(result);
+    }
+
+    let auth_code_path = slack_auth_code_path();
+    let mut used_path: Option<std::path::PathBuf> = None;
+
+    if auth_code_path.exists() {
+        used_path = Some(auth_code_path.clone());
+    } else {
+        let fallback = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri must have a parent directory")
+            .join("callback")
+            .join("slack_auth_code.txt");
+        if fallback.exists() {
+            used_path = Some(fallback);
+        }
+    }
+
+    if let Some(auth_code_path) = used_path {
+        println!("DEBUG: found slack auth code file at {:?}", auth_code_path);
+        let code = fs::read_to_string(&auth_code_path)
+            .map_err(|e| format!("Failed to read slack auth code: {}", e))?
+            .trim()
+            .to_string();
+
+        if code.is_empty() {
+            return Err("No slack auth result yet".to_string());
+        }
+
+        let result = exchange_slack_oauth_code(code).await?;
+        let _ = fs::remove_file(&auth_code_path);
+        Ok(result)
+    } else {
+        Err("No slack auth result yet".to_string())
+    }
+}
+
+#[tauri::command]
+async fn exchange_slack_oauth_code(code: String) -> Result<Value, String> {
+    let client_id = env::var("SLACK_CLIENT_ID")
+        .map_err(|_| "Missing SLACK_CLIENT_ID env var".to_string())?;
+    let client_secret = env::var("SLACK_CLIENT_SECRET")
+        .map_err(|_| "Missing SLACK_CLIENT_SECRET env var".to_string())?;
+    let redirect_uri = "http://localhost:3001/callback";
+
+    let params = [
+        ("client_id".to_string(), client_id),
+        ("client_secret".to_string(), client_secret),
+        ("code".to_string(), code),
+        ("redirect_uri".to_string(), redirect_uri.to_string()),
+    ];
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://slack.com/api/oauth.v2.access")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to exchange slack code: {}", e))?;
+
+    let text = response.text().await.map_err(|e| format!("Failed to read response text: {}", e))?;
+    println!("DEBUG: slack token exchange response: {}", text);
+    let json = serde_json::from_str::<Value>(&text).map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    {
+        let mut state = SLACK_STATE.lock().unwrap();
+        state.auth_result = Some(json.clone());
+    }
+
     Ok(json)
 }
 
@@ -672,6 +806,9 @@ fn main() {
             start_hackclub_oauth,
             get_hackclub_auth_result,
             exchange_hackclub_oauth_code,
+            start_slack_oauth,
+            get_slack_auth_result,
+            exchange_slack_oauth_code,
             open_url,
             check_party_time
         ])
