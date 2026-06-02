@@ -510,7 +510,29 @@ async fn exchange_hackclub_oauth_code(code: String) -> Result<Value, String> {
     
     let text = response.text().await.map_err(|e| format!("Failed to read response text: {}", e))?;
     println!("DEBUG: token exchange response: {}", text);
-    let json = serde_json::from_str::<Value>(&text).map_err(|e| format!("Failed to parse response: {}", e))?;
+    let mut json = serde_json::from_str::<Value>(&text).map_err(|e| format!("Failed to parse response: {}", e))?;
+    
+    // Call /api/v1/me to inspect stuff
+    if let Some(access_token) = json.get("access_token").and_then(|v| v.as_str()) {
+        match client
+            .get("https://auth.hackclub.com/api/v1/me")
+            .bearer_auth(access_token)
+            .send()
+            .await
+        {
+            Ok(me_response) => {
+                if let Ok(me_text) = me_response.text().await {
+                    println!("DEBUG: /api/v1/me response: {}", me_text);
+                    if let Ok(me_json) = serde_json::from_str::<Value>(&me_text) {
+                        json["identity_info"] = me_json;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("DEBUG: Failed to call /api/v1/me: {}", e);
+            }
+        }
+    }
     
     {
         let mut state = HACKCLUB_STATE.lock().unwrap();
