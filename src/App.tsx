@@ -22,8 +22,7 @@ async function saveHackClubAuth(authData: any) {
     const appdata = await appDataDir();
     const authPath = await join(appdata, "orpheus-hackclub-auth.json");
     await writeTextFile(authPath, JSON.stringify(authData, null, 2));
-  } catch (err) {
-  }
+  } catch (err) {}
 }
 
 export default function App() {
@@ -32,6 +31,8 @@ export default function App() {
   const [dino, setDino] = useState<string | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   const [isPartyTime, setIsPartyTime] = useState(false);
+  const [isSlackDM, setIsSlackDM] = useState(false);
+  const [isSlackMention, setIsSlackMention] = useState(false);
   const [lastCodingMinutes, setLastCodingMinutes] = useState(0);
   const [hackClubAuth, setHackClubAuth] = useState<any>(null);
   const [isHackClubAuthenticated, setIsHackClubAuthenticated] = useState(false);
@@ -41,6 +42,7 @@ export default function App() {
   const [showSlackLogin, setShowSlackLogin] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const partyCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const slackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleUpdateDinosaurs = async () => {
     setStatus("Updating dinosaurs...");
@@ -110,7 +112,7 @@ export default function App() {
       const lastMilestone = Math.floor(lastCodingMinutes / 10);
       
       if (currentMilestone > lastMilestone && totalMinutes > 0) {
-        console.log(`🎉 PARTY TIME! Hit ${currentMilestone * 10} minutes of coding!`);
+        console.log(`Party time! Hit ${currentMilestone * 10} minutes of coding!`);
         triggerPartyMode();
       }
       
@@ -123,7 +125,7 @@ export default function App() {
   const triggerPartyMode = () => {
     setIsPartyTime(true);
     setDino("pre/party/party1.gif");
-    setStatus(`🎉 PARTY TIME! You hit a 10-minute coding milestone! 🎉`);
+    setStatus(`Party time! You hit a 10-minute coding milestone!`);
     
     setTimeout(() => {
       setIsPartyTime(false);
@@ -165,7 +167,6 @@ export default function App() {
         return;
       }
 
-      // If authData exists but no token, surface any error info
       if (authData && (authData.error || authData.error_description)) {
         const msg = authData.error_description || authData.error || "Authentication failed";
         console.error("Auth error from backend:", authData);
@@ -174,7 +175,6 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error polling auth result:", err);
-      // keep showHackClubLogin true so polling continues, but surface status
       setStatus("Waiting for authentication... (polling)");
     }
   };
@@ -193,6 +193,15 @@ export default function App() {
     }
   };
 
+  const startSlackPoller = async () => {
+    try {
+      await invoke("start_slack_notification_poller");
+      console.log("Slack notification poller started");
+    } catch (err) {
+      console.error("Failed to start Slack poller:", err);
+    }
+  };
+
   const checkSlackAuthCallback = async () => {
     try {
       console.log("DEBUG: polling for slack auth result");
@@ -204,6 +213,7 @@ export default function App() {
         setIsSlackAuthenticated(true);
         setShowSlackLogin(false);
         setStatus("Slack authentication successful");
+        await startSlackPoller();
         return;
       }
 
@@ -253,9 +263,7 @@ export default function App() {
 
   useEffect(() => {
     const initialTimeout = setTimeout(checkPartyTime, 10000);
-    
     partyCheckRef.current = setInterval(checkPartyTime, 120000);
-    
     return () => {
       clearTimeout(initialTimeout);
       if (partyCheckRef.current) {
@@ -268,7 +276,6 @@ export default function App() {
     loadHackClubAuth().then((auth) => {
       if (auth && auth.access_token) {
         setHackClubAuth(auth);
-        // Automatically reauthenticate when an existing auth is present
         handleHackClubAuth(true);
       } else {
         setShowHackClubLogin(true);
@@ -276,19 +283,54 @@ export default function App() {
     });
   }, []);
 
-    useEffect(() => {
+  useEffect(() => {
     if (showHackClubLogin) {
       const interval = setInterval(checkHackClubAuthCallback, 1000);
       return () => clearInterval(interval);
     }
   }, [showHackClubLogin]);
 
-    useEffect(() => {
-      if (showSlackLogin) {
-        const interval = setInterval(checkSlackAuthCallback, 1000);
-        return () => clearInterval(interval);
+  useEffect(() => {
+    if (showSlackLogin) {
+      const interval = setInterval(checkSlackAuthCallback, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [showSlackLogin]);
+
+  useEffect(() => {
+    const unlisten = listen<{ type: string; text: string; ts: string; channel_id?: string }>(
+      "slack_notification",
+      (event) => {
+        const { type, text, channel_id } = event.payload;
+        console.log("Slack notification:", event.payload);
+        
+        if (slackTimeoutRef.current) clearTimeout(slackTimeoutRef.current);
+        
+        if (type === "dm") {
+          setIsSlackDM(true);
+          setIsSlackMention(false);
+          setDino("dinosaurs/pre/notifications/dm.gif");
+        } else if (type === "mention") {
+          setIsSlackMention(true);
+          setIsSlackDM(false);
+          setDino("dinosaurs/pre/notifications/mention.gif");
+        } else {
+          return;
+        }
+        
+        slackTimeoutRef.current = setTimeout(() => {
+          setIsSlackDM(false);
+          setIsSlackMention(false);
+          if (isTyping) {
+            setDino("pre/typing/typing1.gif");
+          } else if (dinoList.length > 0 && !isPartyTime) {
+            setDino(dinoList[Math.floor(Math.random() * dinoList.length)]);
+          }
+        }, 4000);
       }
-    }, [showSlackLogin]);
+    );
+    return () => { unlisten.then(f => f()); };
+  }, [isTyping, dinoList, isPartyTime]);
 
   const handleSkipHackClubAuth = () => {
     setShowHackClubLogin(false);
@@ -317,6 +359,18 @@ export default function App() {
           alt="Party Dinosaur"
           style={{ width: 256, height: 256, borderRadius: 16 }}
         />
+      ) : isSlackDM ? (
+        <img
+          src={`/dinosaurs/pre/notifications/dm.png`}
+          alt="DM Dinosaur"
+          style={{ width: 256, height: 256, borderRadius: 16 }}
+        />
+      ) : isSlackMention ? (
+        <img
+          src={`/dinosaurs/pre/notifications/dm.png`}
+          alt="Mention Dinosaur"
+          style={{ width: 256, height: 256, borderRadius: 16 }}
+        />
       ) : isTyping ? (
         <img
           src={`/dinosaurs/pre/typing/typing1.gif`}
@@ -343,7 +397,7 @@ export default function App() {
         )}
         <button onClick={handleGetWakatimeToday}>Get Today's WakaTime Stats</button>
         <button onClick={handleGetWakatimeDetailedStats}>Get Detailed WakaTime Stats</button>
-        <button onClick={checkPartyTime} style={{ backgroundColor: '#ff6b6b', color: 'white' }}>🎉 Test Party Mode</button>
+        <button onClick={checkPartyTime} style={{ backgroundColor: '#ff6b6b', color: 'white' }}>Test Party Mode</button>
         <br />
         <strong>Status:</strong> {isHackClubAuthenticated ? "Connected" : "Not connected"}
         <br />
@@ -352,4 +406,3 @@ export default function App() {
     </div>
   );
 }
-
