@@ -1,6 +1,5 @@
 pub mod dinosaurs;
 pub mod hackclub;
-pub mod notification;
 pub mod party;
 pub mod slack;
 pub mod utils;

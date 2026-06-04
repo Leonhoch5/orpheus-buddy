@@ -55,21 +55,13 @@ export default function App() {
     setDebugLog((prev) => [`[${ts}] ${msg}`, ...prev].slice(0, 30));
   };
 
-  // notification-clicked listener
+  // tray "Open Config" emits this event
   useEffect(() => {
     const unlistenPromise = listen("notification-clicked", () => {
       setShowConfig(true);
     });
     return () => { unlistenPromise.then((f) => f()); };
   }, []);
-
-  const sendTestNotification = () => {
-    invoke("send_clickable_notification", {
-      title: "Orpheus Buddy",
-      body: "Click this notification to open config",
-    }).catch((e) => dbg(`Notification error: ${e}`));
-    setStatus("Test notification sent! Click it to open config.");
-  };
 
   const handleUpdateDinosaurs = async () => {
     setStatus("Updating dinosaurs...");
@@ -475,7 +467,6 @@ export default function App() {
         <button onClick={handleUpdateDinosaurs}>Update Dinosaurs</button>
         <button onClick={handleGetWakatimeToday}>Get Today's WakaTime Stats</button>
         <button onClick={handleGetWakatimeDetailedStats}>Get Detailed WakaTime Stats</button>
-        <button onClick={sendTestNotification}>Test Notification</button>
         <button onClick={() => setShowConfig(true)}>Open Config</button>
         <br />
         <strong>Status:</strong> {isHackClubAuthenticated ? "Connected" : "Not connected"}

@@ -3,69 +3,71 @@ mod state;
 mod utils;
 
 use utils::{start_callback_server, start_keyboard_listener};
-use tauri::{Emitter, Manager};
-
-#[tauri::command]
-async fn focus_window(app: tauri::AppHandle) {
-    println!("[focus_window] called");
-    if let Some(window) = app.get_webview_window("main") {
-        println!("[focus_window] found window, focusing...");
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        println!("[focus_window] done");
-    } else {
-        println!("[focus_window] ERROR: could not find 'main' window");
-    }
-}
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Emitter, Manager,
+};
 
 fn main() {
     dotenvy::dotenv().ok();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            println!("[single-instance] callback fired!");
-            println!("[single-instance] args: {:?}", args);
-            println!("[single-instance] cwd: {:?}", cwd);
-
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                println!("[single-instance] found window, showing + focusing");
-                let show_result = window.show();
-                let unmin_result = window.unminimize();
-                let focus_result = window.set_focus();
-                println!("[single-instance] show={:?} unminimize={:?} focus={:?}", show_result, unmin_result, focus_result);
-            } else {
-                println!("[single-instance] ERROR: could not find 'main' window");
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
             }
-
-            let emit_result = app.emit("notification-clicked", ());
-            println!("[single-instance] emit notification-clicked result: {:?}", emit_result);
         }))
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            println!("[setup] app starting up");
             let app_handle = app.handle().clone();
 
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if let Err(e) = commands::notification::send_clickable_notification(
-                    app_handle.clone(),
-                    "Orpheus Buddy".into(),
-                    "Click here to open configuration".into(),
-                ).await {
-                    println!("[setup] startup notification failed: {e}");
-                }
-            });
+            // System tray
+            let open_config = MenuItem::with_id(app, "open-config", "Open Config", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_config, &quit])?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .tooltip("Orpheus Buddy")
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open-config" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        let _ = app.emit("notification-clicked", ());
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        let _ = app.emit("notification-clicked", ());
+                    }
+                })
+                .build(app)?;
 
             start_callback_server();
             start_keyboard_listener(app_handle);
-            println!("[setup] done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            focus_window,
-            commands::notification::send_clickable_notification,
             commands::dinosaurs::update_dinosaurs,
             commands::dinosaurs::clean_dinosaurs,
             commands::dinosaurs::get_resized_dinosaurs,
