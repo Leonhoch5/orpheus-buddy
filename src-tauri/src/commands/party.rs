@@ -25,7 +25,7 @@ pub async fn check_party_time(app_handle: tauri::AppHandle) -> Result<bool, Stri
             0
         }
     };
-    
+
     println!("Current coding time: {} seconds ({} minutes)", current_seconds, current_seconds / 60);
     
     let mut party_state = PARTY_STATE.lock().unwrap();
