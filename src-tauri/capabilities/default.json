@@ -17,6 +17,6 @@
       ]
     },
     "notification:default",
-    "tray-icon:default"
+    "core:tray:default"
   ]
 }
