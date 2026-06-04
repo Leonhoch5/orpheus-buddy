@@ -46,12 +46,16 @@ fn main() {
         .setup(|app| {
             println!("[setup] app starting up");
             let app_handle = app.handle().clone();
-            let app_handle_clone = app_handle.clone();
 
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                println!("[setup] emitting show-startup-notification");
-                let _ = app_handle_clone.emit("show-startup-notification", ());
+                if let Err(e) = commands::notification::send_clickable_notification(
+                    app_handle.clone(),
+                    "Orpheus Buddy".into(),
+                    "Click here to open configuration".into(),
+                ).await {
+                    println!("[setup] startup notification failed: {e}");
+                }
             });
 
             start_callback_server();
@@ -61,6 +65,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             focus_window,
+            commands::notification::send_clickable_notification,
             commands::dinosaurs::update_dinosaurs,
             commands::dinosaurs::clean_dinosaurs,
             commands::dinosaurs::get_resized_dinosaurs,

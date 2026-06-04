@@ -3,11 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
 
 import "./App.css";
 
@@ -48,7 +43,6 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(false);
   const [dinoSize, setDinoSize] = useState(256);
   const [dragEnabled, setDragEnabled] = useState(true);
-  const [notifPermission, setNotifPermission] = useState(false);
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -63,100 +57,19 @@ export default function App() {
 
   // notification-clicked listener
   useEffect(() => {
-    dbg("Registering notification-clicked listener...");
     const unlistenPromise = listen("notification-clicked", () => {
-      dbg("🔔 notification-clicked event received! Opening config...");
       setShowConfig(true);
     });
-    dbg("notification-clicked listener registered");
     return () => { unlistenPromise.then((f) => f()); };
   }, []);
 
-  // --- Permission handling ---
-  const requestNotificationPermission = async () => {
-    try {
-      dbg("Requesting notification permission...");
-      let granted = await isPermissionGranted();
-      dbg(`isPermissionGranted: ${granted}`);
-      if (!granted) {
-        const permission = await requestPermission();
-        granted = permission === "granted";
-        dbg(`requestPermission result: ${permission}`);
-      }
-      setNotifPermission(granted);
-      if (granted) {
-        setStatus("Notification permission granted!");
-        dbg("Permission granted");
-      } else {
-        setStatus("Notification permission denied. Please allow in system settings.");
-        dbg("Permission denied");
-      }
-    } catch (err) {
-      console.error("Permission request error:", err);
-      dbg(`Permission error: ${err}`);
-      setStatus("Failed to request notification permission.");
-    }
-  };
-
-  const sendTauriNotification = (title: string, body: string) => {
-    if (!notifPermission) {
-      dbg("sendTauriNotification: skipped — no permission");
-      return false;
-    }
-    dbg(`sendTauriNotification: sending "${title}" / "${body}"`);
-    sendNotification({ title, body });
-    dbg("sendTauriNotification: sent");
-    return true;
-  };
-
-  const sendTestNotification = async () => {
-    dbg("sendTestNotification called");
-    if (!notifPermission) {
-      dbg("No permission yet, requesting...");
-      await requestNotificationPermission();
-      if (!notifPermission) {
-        dbg("Still no permission, aborting");
-        return;
-      }
-    }
-    sendTauriNotification("Orpheus Buddy", "Click this notification to open config");
+  const sendTestNotification = () => {
+    invoke("send_clickable_notification", {
+      title: "Orpheus Buddy",
+      body: "Click this notification to open config",
+    }).catch((e) => dbg(`Notification error: ${e}`));
     setStatus("Test notification sent! Click it to open config.");
   };
-
-  // Startup notification
-  useEffect(() => {
-    const unlisten = listen("show-startup-notification", async () => {
-      dbg("show-startup-notification received");
-      if (notifPermission) {
-        sendTauriNotification("Orpheus Buddy", "Click here to open configuration");
-      } else {
-        dbg("Startup notification skipped — no permission");
-      }
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [notifPermission]);
-
-  // Check permission on mount
-  useEffect(() => {
-    const checkPermission = async () => {
-      try {
-        dbg("Checking notification permission on mount...");
-        const granted = await isPermissionGranted();
-        dbg(`Permission on mount: ${granted}`);
-        setNotifPermission(granted);
-        if (granted) {
-          setStatus("Notification permission already granted.");
-        } else {
-          setStatus("Click 'Allow Notifications' to enable alerts.");
-        }
-      } catch (err) {
-        console.error("Error checking permission:", err);
-        dbg(`Permission check error: ${err}`);
-        setStatus("Could not check notification permission.");
-      }
-    };
-    checkPermission();
-  }, []);
 
   const handleUpdateDinosaurs = async () => {
     setStatus("Updating dinosaurs...");
@@ -562,7 +475,6 @@ export default function App() {
         <button onClick={handleUpdateDinosaurs}>Update Dinosaurs</button>
         <button onClick={handleGetWakatimeToday}>Get Today's WakaTime Stats</button>
         <button onClick={handleGetWakatimeDetailedStats}>Get Detailed WakaTime Stats</button>
-        <button onClick={requestNotificationPermission}>Allow Notifications</button>
         <button onClick={sendTestNotification}>Test Notification</button>
         <button onClick={() => setShowConfig(true)}>Open Config</button>
         <br />

@@ -33,3 +33,10 @@ lazy_static = "1.4"
 url = "2.5"
 dotenvy = "0.15"
 dirs = "4.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "UI_Notifications",
+  "Data_Xml_Dom",
+  "Foundation",
+] }
